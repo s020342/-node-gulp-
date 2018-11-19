@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+
+//加载所需要的模块
+var http = require('http');
+var url = require('url');
+var fs = require('fs');
+var path = require('path');
+var querystring = require('querystring');
+let { exec } = require("child_process")
+var event = require("./event.js")
+
+let port = 8888
+
+// let dirToObject = require("../libs/dirToObject.js")
+
+// dirToObject.init(path.join(process.cwd(), "./src"))
+// let MSF = dirToObject.MSF
+
+function Server(option) {
+    let { MSF, host, port, open, middleware } = option
+    // console.log(MSF)
+    creatServer(MSF, host, port, open, middleware)
+}
+
+
+function creatServer(MSF, host, port, open, middleware) {
+    //1、创建服务；
+    var httpServer = http.createServer(function(req, res, next) {
+            middleware(req, res, () => {})
+                //如果在接口中间件中，未响应，则去内存对象中找对应的路径进行响应
+            if (!res.finished) {
+                run(req, res, MSF, middleware)
+            }
+
+        })
+        //2、创建socket服务
+    let io = require('socket.io')(httpServer);
+
+    // 服务端监听连接状态：io的connection事件表示客户端与服务端成功建立连接，它接收一个回调函数，回调函数会接收一个socket参数。
+    let num = 1
+    io.on('connection', (socket) => {
+        console.log('连接成功');
+        num++
+        // 监听断开连接状态：socket的disconnect事件表示客户端与服务端断开连接
+        socket.on('disconnect', () => {
+            console.log('connect disconnect');
+            event.destroyedCB("load", num)
+        });
+
+        event.on("load", num, () => {
+            console.log("刷新")
+            setTimeout(() => {
+                socket.emit('load');
+            });
+        })
+    });
+
+    httpServer.listen(port, host, () => {
+        exec(`start http://${host}:${port}${open}`, () => {
+            console.log(`url: http://${host}:${port}`)
+            console.log("服务已启动，且在浏览器已经访问")
+        })
+    })
+
+}
+
+
+
+//mime类型
+var mime = {
+    "css": "text/css",
+    "gif": "image/gif",
+    "html": "text/html",
+    "ico": "image/x-icon",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "js": "text/javascript",
+    "json": "application/json",
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+    "swf": "application/x-shockwave-flash",
+    "tiff": "image/tiff",
+    "txt": "text/plain",
+    "wav": "audio/x-wav",
+    "wma": "audio/x-ms-wma",
+    "wmv": "video/x-ms-wmv",
+    "xml": "text/xml",
+    "manifest": "text/cache-manifest"
+};
+//浏览器时时刷新
+let reload = `<script src="http://127.0.0.1:${port}/socket.io/socket.io.js"></script>
+    <script>
+        let socket = io.connect('ws://127.0.0.1:${port}');
+        socket.on('load', (data) => {
+
+            window.location.reload()
+        });
+    </script>`
+
+//服务配置文件
+function run(req, res, MSF, middleware) {
+
+    let currentUrl = url.parse(req.url).pathname
+
+    //根据请求生成文件地址
+    let pathUrl = url.parse(req.url)
+
+    let urlArr = pathUrl.pathname.split("/").slice(1).filter((i) => {
+        return i != ""
+    })
+
+    let obj = MSF
+    let ext = "txt"
+
+    //获取文件（buffer）或者文件夹内容（对象）
+    //获取到了文件后缀名
+    urlArr.forEach((i) => {
+        obj = obj[i]
+        let exts = path.extname(i).substr(1)
+        ext = exts ? exts : "txt"
+    });
+
+    if (obj) {
+        if (obj instanceof Buffer) {
+            res.writeHead(200, { "content-type": mime[ext] + ";charset=utf-8" })
+            if (ext == "html") {
+                res.end(obj.toString("utf-8") + reload)
+            } else {
+                res.end(obj.toString("utf-8"))
+            }
+
+        } else {
+            res.writeHead(200, { "content-type": "text/html;charset=utf-8" })
+            let buf = dirHandle(obj, pathUrl)
+            res.end(buf.toString("utf-8") + reload)
+        }
+    } else {
+        res.writeHead(404, { "content-type": "text/html;charset=utf-8" })
+        res.end("<h2>文件不存在</h2>")
+    }
+
+
+}
+
+
+function dirHandle(obj, pathUrl) {
+
+    var html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>目录</title></head><body><ul>`
+    let arr = Object.entries(obj)
+
+    if (arr.length == 0) {
+        html += `<li>地址错误</li></ul></body></html>`
+        return Buffer.from(html)
+    } else {
+        let file = null
+        let state = arr.some((i) => {
+            if (i[0] == "index.html") {
+                file = i[1]
+                return true
+            } else {
+                if (pathUrl.pathname.slice(pathUrl.pathname.length - 1) == "/") {
+                    var aPath = pathUrl.pathname + i[0]
+                } else {
+                    var aPath = pathUrl.pathname + "/" + i[0]
+                }
+
+                html += `<li><a href="${aPath}">${i[0]}</a></li>`
+                return false
+            }
+        });
+        //如果state为true，则index.html存在，直接找到index.html的路径进行文件响应
+        if (state) {
+            return file
+        } else {
+            //如果state不为true，则继续拼接页面
+            html += `</ul></body></html>`
+            return Buffer.from(html)
+        }
+
+    }
+}
+
+
+module.exports = Server
